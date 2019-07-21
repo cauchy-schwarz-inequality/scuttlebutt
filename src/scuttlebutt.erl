@@ -53,6 +53,7 @@ write_keys_to_file() ->
     file:delete("secret"),
     {ok, S} = file:open("secret", [append, binary]),
     %% Copying the copy in https://github.com/ssbc/ssb-keys/blob/master/storage.js#L32 
+    %% TODO: Do this in fewer filesystem operations :)
     io:format(S, <<"/*~n">>, []),
     io:format(S, <<"  this is your SECRET name.~n">>, []),
     io:format(S, <<"  this name gives you magical powers.~n">>, []),
