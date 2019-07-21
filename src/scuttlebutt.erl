@@ -28,9 +28,18 @@ test() ->
     ClientSecondSharedSecret = client_generate_second_shared_secret(ClientEphemeralSecret, ServerLongTermPublicKey),
     ServerSecondSharedSecret = server_generate_second_shared_secret(ServerLongTermSecret, ClientEphemeralPublicKey),
     ClientSecondSharedSecret = ServerSecondSharedSecret,
-    ClientDetachedSignature = detached_signature(NetworkIdentifier, ServerLongTermPublicKey, ClientSharedSecret, ClientLongTermSecret),
+    ClientDetachedSignature = client_detached_signature(NetworkIdentifier, ServerLongTermPublicKey, ClientSharedSecret, ClientLongTermSecret),
     ClientSecretBox = client_secret_box(ClientDetachedSignature, ClientLongTermPublicKey, NetworkIdentifier, ClientSharedSecret, ClientSecondSharedSecret),
-    server_open_box(ClientSecretBox, NetworkIdentifier, ClientSharedSecret, ClientSecondSharedSecret, ServerLongTermPublicKey).
+    ServerOpenBox = server_open_box(ClientSecretBox, NetworkIdentifier, ClientSharedSecret, ClientSecondSharedSecret, ServerLongTermPublicKey),
+    ClientThirdSharedSecret = client_derive_third_shared_secret(ClientLongTermSecret, ServerEphemeralPublicKey),
+    ServerThirdSharedSecret = server_derive_third_shared_secret(ServerEphemeralSecret, ClientLongTermPublicKey),
+    ClientThirdSharedSecret = ServerThirdSharedSecret,
+    ServerDetachedSignature = server_detached_signature(NetworkIdentifier, ClientDetachedSignature, ServerLongTermSecret, ServerSharedSecret, ClientLongTermPublicKey),
+    ServerSecretBox = server_secret_box(ServerDetachedSignature, NetworkIdentifier, ServerSharedSecret, ServerSecondSharedSecret, ServerThirdSharedSecret),
+    ClientOpenBox = client_open_box(ServerSecretBox, ClientDetachedSignature, NetworkIdentifier, ClientSharedSecret, ClientSecondSharedSecret, ClientThirdSharedSecret, ClientLongTermPublicKey, ServerLongTermPublicKey).
+    
+	
+    
 
 
 %%====================================================================
@@ -39,7 +48,7 @@ test() ->
 
 
 write_keys_to_file() ->
-    #{public := PublicKey, private := PrivateKey} = enacl:crypto_sign_ed25519_keypair(),
+    #{public := PublicKey, secret := PrivateKey} = enacl:crypto_sign_ed25519_keypair(),
     Algorithm = ".ed25519",
     Base64Public = base64:encode_to_string(PublicKey) ++ Algorithm,
     Base64Private = "@" ++ base64:encode_to_string(PrivateKey) ++ Algorithm,
@@ -100,16 +109,16 @@ client_generate_second_shared_secret(ClientEphemeralSecret, ServerLongTermPublic
 server_generate_second_shared_secret(ServerLongTermSecret, ClientEphemeralPublicKey) ->
     enacl:curve25519_scalarmult(enacl:crypto_sign_ed25519_secret_to_curve25519(ServerLongTermSecret), ClientEphemeralPublicKey).
 
-detached_signature(NetworkIdentifier, ServerLongTermPublicKey, SharedSecret, ClientLongTermSecret) ->
+client_detached_signature(NetworkIdentifier, ServerLongTermPublicKey, SharedSecret, ClientLongTermSecret) ->
     HashedSecret = crypto:hash(sha256, SharedSecret),
-    Message = <<NetworkIdentifier/bytes, ServerLongTermPublicKey/bytes, HashedSecret/bytes>>,
+    Message = <<NetworkIdentifier/binary, ServerLongTermPublicKey/binary, HashedSecret/binary>>,
     enacl:sign_detached(Message, ClientLongTermSecret).
 
 make_box_key(NetworkIdentifier, SharedSecret, SecondSharedSecret) ->
     crypto:hash(sha256, <<NetworkIdentifier/binary, SharedSecret/binary, SecondSharedSecret/binary>>).
 
-client_secret_box(DetachedSignature, ClientLongTermPublicKey, NetworkIdentifier, SharedSecret, SecondSharedSecret) ->
-    Message = <<DetachedSignature/binary, ClientLongTermPublicKey/binary>>,
+client_secret_box(ClientDetachedSignature, ClientLongTermPublicKey, NetworkIdentifier, SharedSecret, SecondSharedSecret) ->
+    Message = <<ClientDetachedSignature/binary, ClientLongTermPublicKey/binary>>,
     %% Nonce is 24 bytes of 0s -- this is OK because this is the only secret box that will ever use 
     %% the BoxKey as defined below.
     Nonce = <<0:(24*8)>>,
@@ -125,8 +134,29 @@ server_open_box(Box, NetworkIdentifier, SharedSecret, SecondSharedSecret, Server
     Message = <<NetworkIdentifier/binary, ServerLongTermPublicKey/binary, (crypto:hash(sha256, SharedSecret))/binary>>,
     enacl:sign_verify_detached(DetachedSignature, Message, ClientLongTermPublicKey).
     
-client_derive_shared_secret(ClientLongTermSecret, ServerEphemeralPublicKey) ->
-    enacl:scalar_mult(enacl:crypto_sign_ed25519_secret_to_curve25519(ClientLongTermSecret), ServerEphemeralPublicKey).
+client_derive_third_shared_secret(ClientLongTermSecret, ServerEphemeralPublicKey) ->
+    enacl:curve25519_scalarmult(enacl:crypto_sign_ed25519_secret_to_curve25519(ClientLongTermSecret), ServerEphemeralPublicKey).
 
-server_derive_shared_secret(ServerEphemeralSecret, ClientLongTermPublicKey) ->
-    enacl:scalar_mult(ServerEphemeralSecret, enacl:crypto_sign_ed25519_public_to_curve25519(ClientLongTermPublicKey)).
+server_derive_third_shared_secret(ServerEphemeralSecret, ClientLongTermPublicKey) ->
+    enacl:curve25519_scalarmult(ServerEphemeralSecret, enacl:crypto_sign_ed25519_public_to_curve25519(ClientLongTermPublicKey)).
+
+server_detached_signature(NetworkIdentifier, ClientDetachedSignature, ServerLongTermSecret, SharedSecret, ClientLongTermPublicKey) ->
+    HashedSecret = crypto:hash(sha256, SharedSecret),
+    Message = <<NetworkIdentifier/binary, ClientDetachedSignature/binary, ClientLongTermPublicKey/binary, HashedSecret/binary>>,
+    enacl:sign_detached(Message, ServerLongTermSecret).
+
+make_server_box_key(NetworkIdentifier, SharedSecret, SecondSharedSecret, ThirdSharedSecret) ->
+    crypto:hash(sha256, <<NetworkIdentifier/binary, SharedSecret/binary, SecondSharedSecret/binary, ThirdSharedSecret/binary>>).
+
+server_secret_box(ServerDetachedSignature, NetworkIdentifier, SharedSecret, SecondSharedSecret, ThirdSharedSecret) ->
+    Nonce = <<0:(24*8)>>,
+    BoxKey = make_server_box_key(NetworkIdentifier, SharedSecret, SecondSharedSecret, ThirdSharedSecret),
+    enacl:box_afternm(ServerDetachedSignature, Nonce, BoxKey).
+
+client_open_box(Box, ClientDetachedSignature, NetworkIdentifier, SharedSecret, SecondSharedSecret, ThirdSharedSecret, ClientLongTermPublicKey, ServerLongTermPublicKey) ->
+    Nonce = <<0:(24*8)>>,
+    BoxKey = make_server_box_key(NetworkIdentifier, SharedSecret, SecondSharedSecret, ThirdSharedSecret),
+    {ok, ServerDetachedSignature} = enacl:box_open_afternm(Box, Nonce, BoxKey),
+    SharedSecretHash = crypto:hash(sha256, SharedSecret),
+    Message = <<NetworkIdentifier/binary, ClientDetachedSignature/binary, ClientLongTermPublicKey/binary, SharedSecretHash/binary>>,
+    enacl:sign_verify_detached(ServerDetachedSignature, Message, ServerLongTermPublicKey).
