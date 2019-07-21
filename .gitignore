@@ -1,5 +1,8 @@
 # -*- mode: gitignore; -*-
 
+# Project specific
+secret
+
 # Emacs specific 
 *~
 \#*\#
