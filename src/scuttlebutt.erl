@@ -7,7 +7,7 @@
 %% API functions
 %%====================================================================
 
-%% Bootstrapping unit tests here until
+%% Bootstrapping unit tests here until I port this to eunit
 %% Simulate a successful handshake between two peers and die loudly if any step fails
 %% TODO: Port these to use eunit
 test() ->
